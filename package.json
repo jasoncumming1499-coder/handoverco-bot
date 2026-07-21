@@ -1,0 +1,15 @@
+{
+  "name": "handoverco-telegram-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot: auto-welcomes new members and auto-replies with AI until owner takes over the chat",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "grammy": "^1.21.1",
+    "@anthropic-ai/sdk": "^0.27.0",
+    "dotenv": "^16.4.5"
+  }
+}
