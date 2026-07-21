@@ -1,23 +1,25 @@
 import 'dotenv/config';
-import { Bot } from 'grammy';
+import express from 'express';
+import { Bot, webhookCallback } from 'grammy';
 import Anthropic from '@anthropic-ai/sdk';
 import fs from 'fs';
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const OWNER_ID = Number(process.env.OWNER_ID);
+const PUBLIC_URL = process.env.PUBLIC_URL;
+const PORT = process.env.PORT || 3000;
 const WELCOME_MESSAGE = process.env.WELCOME_MESSAGE ||
   "Welcome! Ask me anything and I'll help until Jason jumps in personally.";
 
-if (!BOT_TOKEN || !ANTHROPIC_API_KEY || !OWNER_ID) {
-  console.error('Missing BOT_TOKEN, ANTHROPIC_API_KEY, or OWNER_ID in .env');
+if (!BOT_TOKEN || !ANTHROPIC_API_KEY || !OWNER_ID || !PUBLIC_URL) {
+  console.error('Missing BOT_TOKEN, ANTHROPIC_API_KEY, OWNER_ID, or PUBLIC_URL in environment variables');
   process.exit(1);
 }
 
 const bot = new Bot(BOT_TOKEN);
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
-// --- Persisted "mode" per chat: true = human is handling it, bot stays quiet ---
 const MODES_FILE = './chat-modes.json';
 let humanModeChats = new Set();
 try {
@@ -26,11 +28,14 @@ try {
   humanModeChats = new Set();
 }
 function saveModes() {
-  fs.writeFileSync(MODES_FILE, JSON.stringify([...humanModeChats]));
+  try {
+    fs.writeFileSync(MODES_FILE, JSON.stringify([...humanModeChats]));
+  } catch (e) {
+    console.warn('Could not persist chat modes:', e.message);
+  }
 }
 
-// --- Simple rolling conversation memory per chat (last 10 messages, resets on restart) ---
-const history = new Map(); // chatId -> [{role, content}]
+const history = new Map();
 function pushHistory(chatId, role, content) {
   const h = history.get(chatId) || [];
   h.push({ role, content });
@@ -38,7 +43,6 @@ function pushHistory(chatId, role, content) {
   history.set(chatId, h);
 }
 
-// EDIT THIS to describe your business — this is what the AI knows and says.
 const SYSTEM_PROMPT = `You are the assistant for The Handover Co, a UK digital estate administration business.
 
 What we do:
@@ -52,7 +56,6 @@ Rules:
 - If someone wants to sign up, has a complex or urgent case, or asks something you're unsure about, tell them Jason will personally follow up, and do not make promises about pricing or timelines.
 - Keep replies short — 2-4 sentences, suitable for a Telegram chat.`;
 
-// --- Welcome new members ---
 bot.on('message:new_chat_members', async (ctx) => {
   for (const member of ctx.message.new_chat_members) {
     if (member.is_bot) continue;
@@ -60,7 +63,6 @@ bot.on('message:new_chat_members', async (ctx) => {
   }
 });
 
-// --- Owner controls: /human and /ai toggle per chat ---
 bot.command('human', async (ctx) => {
   if (ctx.from?.id !== OWNER_ID) return;
   humanModeChats.add(ctx.chat.id);
@@ -75,10 +77,9 @@ bot.command('ai', async (ctx) => {
   await ctx.reply("🤖 AI auto-reply is back ON for this chat.");
 });
 
-// --- Auto-reply with Claude unless this chat is in human mode ---
 bot.on('message:text', async (ctx) => {
-  if (ctx.message.text.startsWith('/')) return; // ignore commands here
-  if (humanModeChats.has(ctx.chat.id)) return;   // owner is handling this chat
+  if (ctx.message.text.startsWith('/')) return;
+  if (humanModeChats.has(ctx.chat.id)) return;
 
   const chatId = ctx.chat.id;
   pushHistory(chatId, 'user', ctx.message.text);
@@ -106,5 +107,17 @@ bot.on('message:text', async (ctx) => {
 
 bot.catch((err) => console.error('Bot error:', err));
 
-bot.start();
-console.log('Bot is running...');
+const app = express();
+app.use(express.json());
+app.get('/', (req, res) => res.send('Bot is running.'));
+app.use(`/webhook/${BOT_TOKEN}`, webhookCallback(bot, 'express'));
+
+app.listen(PORT, async () => {
+  console.log(`Server listening on port ${PORT}`);
+  try {
+    await bot.api.setWebhook(`${PUBLIC_URL}/webhook/${BOT_TOKEN}`);
+    console.log('Webhook set successfully.');
+  } catch (err) {
+    console.error('Failed to set webhook:', err);
+  }
+});
